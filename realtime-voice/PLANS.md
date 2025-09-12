@@ -8,9 +8,9 @@
 ### 1주차: 뼈대 & STT
 - [x] 환경 설정 및 프로젝트 구조
 - [x] 서버 WebSocket 에코 테스트 (HTTP: 3001, WS: 8080)
-- [ ] 오디오 캡처 (MediaRecorder)
-- [ ] Whisper API 연동
-- [ ] 텍스트 스트림 UI
+- [x] 오디오 캡처 (MediaRecorder)
+- [x] Whisper API 연동
+- [x] 텍스트 스트림 UI
 
 **완료 기준**: 말하면 3-6초 후 화면에 텍스트 출력
 
