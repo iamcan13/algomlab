@@ -20,6 +20,15 @@ interface ChunkAckMessage {
   error?: string;
 }
 
+interface TranscriptionMessage {
+  type: 'transcription_result';
+  sessionId: string;
+  sequence: number;
+  text: string;
+  duration?: number;
+  timestamp: number;
+}
+
 export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
@@ -28,11 +37,14 @@ export default function Home() {
   const [sessionId] = useState(() => `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
   const [chunkCount, setChunkCount] = useState(0);
   const [totalSize, setTotalSize] = useState(0);
+  const [transcriptions, setTranscriptions] = useState<Array<{sequence: number, text: string, timestamp: number}>>([]);
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const sequenceRef = useRef(0);
+  const chunkIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const isRecordingRef = useRef(false);
 
   // WebSocket 연결
   const connectWebSocket = () => {
@@ -57,6 +69,24 @@ export default function Home() {
             } else {
               console.error(`청크 저장 실패: 시퀀스=${ackMessage.sequence}, 오류=${ackMessage.error}`);
             }
+          } else if (message.type === 'transcription_result') {
+            const transcriptionMessage = message as TranscriptionMessage;
+            console.log(`STT 결과 수신: 시퀀스=${transcriptionMessage.sequence}, 텍스트="${transcriptionMessage.text}"`);
+            
+            // 텍스트 결과를 상태에 추가
+            setTranscriptions(prev => {
+              const newTranscription = {
+                sequence: transcriptionMessage.sequence,
+                text: transcriptionMessage.text,
+                timestamp: transcriptionMessage.timestamp
+              };
+              
+              // 시퀀스 순서로 정렬하여 추가
+              const updated = [...prev, newTranscription].sort((a, b) => a.sequence - b.sequence);
+              return updated;
+            });
+          } else if (message.type === 'transcription_error') {
+            console.error(`STT 오류: 시퀀스=${message.sequence}, 오류=${message.error}`);
           }
         } catch (err) {
           console.error('서버 메시지 파싱 오류:', err);
@@ -173,44 +203,94 @@ export default function Home() {
         if (!stream) return;
       }
 
-      // MediaRecorder 설정
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus' // Chrome 최적화
-      });
-      
-      mediaRecorderRef.current = mediaRecorder;
+      // MediaRecorder 설정 - 각 청크가 독립적이 되도록 수정
+      let supportedMimeType;
+      if (MediaRecorder.isTypeSupported('audio/wav')) {
+        supportedMimeType = 'audio/wav';
+      } else if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+        supportedMimeType = 'audio/webm;codecs=opus';
+      } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+        supportedMimeType = 'audio/webm';
+      } else {
+        supportedMimeType = ''; // 기본값 사용
+      }
 
-      // 청크 데이터 처리
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          console.log('오디오 청크 수신:', {
-            size: event.data.size,
-            type: event.data.type,
-            timestamp: Date.now()
-          });
-          
-          // 서버로 전송
-          sendAudioChunk(event.data);
+      console.log(`사용할 MIME 타입: ${supportedMimeType}`);
+
+      // MediaRecorder 생성 함수
+      const createMediaRecorder = (audioStream: MediaStream) => {
+        const recorder = new MediaRecorder(audioStream, {
+          mimeType: supportedMimeType,
+          audioBitsPerSecond: 128000
+        });
+        
+        recorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            console.log('독립적인 오디오 청크 수신:', {
+              size: event.data.size,
+              type: event.data.type,
+              timestamp: Date.now(),
+              sequence: sequenceRef.current + 1
+            });
+            
+            // 서버로 전송
+            sendAudioChunk(event.data);
+          }
+        };
+        
+        recorder.onstart = () => {
+          console.log(`청크 ${sequenceRef.current + 1} 녹음 시작`);
+        };
+        
+        recorder.onstop = () => {
+          console.log(`청크 ${sequenceRef.current + 1} 녹음 완료`);
+        };
+        
+        recorder.onerror = (event) => {
+          console.error('MediaRecorder 에러:', event);
+          setError('녹음 중 오류가 발생했습니다.');
+        };
+        
+        return recorder;
+      };
+
+      // 5초마다 새로운 독립적인 청크 생성
+      const createChunk = () => {
+        console.log(`createChunk 호출됨 - 스트림 존재: ${!!streamRef.current}, 녹음 중: ${isRecordingRef.current}`);
+        
+        if (!streamRef.current || !isRecordingRef.current) {
+          console.log('청크 생성 중단: 스트림 없음 또는 녹음 중단됨');
+          return;
         }
+        
+        // 현재 MediaRecorder 중지
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+          console.log('현재 MediaRecorder 중지');
+          mediaRecorderRef.current.stop();
+        }
+        
+        // 100ms 후 새로운 MediaRecorder로 다음 청크 시작
+        setTimeout(() => {
+          if (!streamRef.current || !isRecordingRef.current) {
+            console.log('setTimeout 내부 - 조건 확인 실패');
+            return;
+          }
+          
+          console.log('새로운 MediaRecorder 생성 및 시작');
+          const newRecorder = createMediaRecorder(streamRef.current);
+          mediaRecorderRef.current = newRecorder;
+          newRecorder.start();
+        }, 100);
       };
 
-      mediaRecorder.onstart = () => {
-        console.log('녹음 시작됨');
-        setIsRecording(true);
-      };
+      // 첫 번째 MediaRecorder 설정 및 시작
+      mediaRecorderRef.current = createMediaRecorder(stream);
+      mediaRecorderRef.current.start();
+      setIsRecording(true);
+      isRecordingRef.current = true;
 
-      mediaRecorder.onstop = () => {
-        console.log('녹음 중지됨');
-        setIsRecording(false);
-      };
-
-      mediaRecorder.onerror = (event) => {
-        console.error('MediaRecorder 에러:', event);
-        setError('녹음 중 오류가 발생했습니다.');
-      };
-
-      // 5초 간격으로 청크 생성
-      mediaRecorder.start(5000);
+      // 5초마다 새로운 독립적인 청크 생성
+      chunkIntervalRef.current = setInterval(createChunk, 5000);
       
     } catch (err) {
       console.error('녹음 시작 실패:', err);
@@ -220,17 +300,30 @@ export default function Home() {
 
   // 녹음 중지
   const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      
-      // 스트림 정리
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-        streamRef.current = null;
-      }
-      
-      setHasPermission(null);
+    console.log('녹음 중지 요청됨');
+    
+    // 상태 즉시 업데이트
+    setIsRecording(false);
+    isRecordingRef.current = false;
+    
+    // 청크 생성 인터벌 중지
+    if (chunkIntervalRef.current) {
+      clearInterval(chunkIntervalRef.current);
+      chunkIntervalRef.current = null;
     }
+    
+    // MediaRecorder 중지
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    
+    // 스트림 정리
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    
+    setHasPermission(null);
   };
 
   return (
@@ -241,7 +334,7 @@ export default function Home() {
             실시간 면접 코파일럿
           </h1>
           <p className="text-gray-600">
-            Phase 1: MediaRecorder 기본 구현 (마이크 권한 + 청크 로깅)
+            Phase 1-2 완료: 실시간 음성 → 텍스트 변환 (MediaRecorder + Whisper API)
           </p>
         </header>
 
@@ -340,6 +433,54 @@ export default function Home() {
               </button>
             )}
           </div>
+        </div>
+
+        {/* 실시간 텍스트 스트림 */}
+        <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
+          <h2 className="text-xl font-semibold mb-4">실시간 텍스트 변환</h2>
+          
+          {transcriptions.length === 0 ? (
+            <div className="text-gray-500 text-center py-8">
+              녹음을 시작하면 음성이 실시간으로 텍스트로 변환됩니다.
+            </div>
+          ) : (
+            <div className="space-y-3 max-h-96 overflow-y-auto">
+              {transcriptions.map((transcription) => (
+                <div 
+                  key={transcription.sequence}
+                  className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg"
+                >
+                  <span className="flex-shrink-0 w-8 h-8 bg-blue-500 text-white text-sm font-medium rounded-full flex items-center justify-center">
+                    {transcription.sequence}
+                  </span>
+                  <div className="flex-1">
+                    <p className="text-gray-800">{transcription.text}</p>
+                    <p className="text-xs text-gray-500 mt-1">
+                      {new Date(transcription.timestamp).toLocaleTimeString()}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          
+          {/* 전체 텍스트 복사 버튼 */}
+          {transcriptions.length > 0 && (
+            <div className="mt-4 pt-4 border-t">
+              <button
+                onClick={() => {
+                  const fullText = transcriptions.map(t => t.text).join(' ');
+                  navigator.clipboard.writeText(fullText);
+                }}
+                className="px-4 py-2 bg-blue-500 text-white text-sm rounded-md hover:bg-blue-600 transition-colors"
+              >
+                📋 전체 텍스트 복사
+              </button>
+              <span className="ml-3 text-sm text-gray-600">
+                총 {transcriptions.length}개 세그먼트
+              </span>
+            </div>
+          )}
         </div>
 
         {/* 개발자 정보 */}

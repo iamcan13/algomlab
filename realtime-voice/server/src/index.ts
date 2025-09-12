@@ -1,8 +1,10 @@
+import 'dotenv/config';
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import cors from 'cors';
 import { createServer } from 'http';
 import { AudioStorageService, AudioChunkMessage } from './services/audioStorage';
+import { WhisperService } from './services/whisperService';
 
 const app = express();
 const server = createServer(app);
@@ -11,14 +13,25 @@ const WS_PORT = parseInt(process.env.WS_PORT || '8080');
 
 // Services
 const audioStorage = new AudioStorageService();
+const whisperService = new WhisperService();
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
 // Basic route
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', message: 'Server is running' });
+app.get('/api/health', async (req, res) => {
+  const whisperHealth = await whisperService.healthCheck();
+  const whisperStats = whisperService.getStats();
+  
+  res.json({ 
+    status: 'ok', 
+    message: 'Server is running',
+    whisper: {
+      healthy: whisperHealth,
+      ...whisperStats
+    }
+  });
 });
 
 // Session stats endpoint
@@ -47,7 +60,45 @@ wss.on('connection', (ws) => {
         // 파일 저장
         const ackMessage = await audioStorage.saveAudioChunk(audioMessage);
         
-        // 응답 전송
+        // 저장 성공 시 STT 처리
+        if (ackMessage.saved && ackMessage.filePath) {
+          console.log(`STT 처리 시작: ${ackMessage.filePath}`);
+          
+          // 비동기로 STT 처리 (응답 속도를 위해 백그라운드에서 실행)
+          whisperService.transcribeAudioFile(
+            ackMessage.filePath, 
+            audioMessage.sessionId, 
+            audioMessage.sequence
+          ).then(transcriptionResult => {
+            // STT 결과를 클라이언트에 전송
+            if (transcriptionResult.success && transcriptionResult.transcription) {
+              const sttMessage = {
+                type: 'transcription_result',
+                sessionId: audioMessage.sessionId,
+                sequence: audioMessage.sequence,
+                text: transcriptionResult.transcription.text,
+                duration: transcriptionResult.transcription.duration,
+                timestamp: Date.now()
+              };
+              
+              console.log(`STT 결과 전송: "${sttMessage.text}"`);
+              ws.send(JSON.stringify(sttMessage));
+            } else {
+              console.error(`STT 실패: ${transcriptionResult.error}`);
+              ws.send(JSON.stringify({
+                type: 'transcription_error',
+                sessionId: audioMessage.sessionId,
+                sequence: audioMessage.sequence,
+                error: transcriptionResult.error,
+                timestamp: Date.now()
+              }));
+            }
+          }).catch(error => {
+            console.error('STT 처리 중 예외 발생:', error);
+          });
+        }
+        
+        // 청크 저장 응답 전송
         ws.send(JSON.stringify(ackMessage));
         
         // 세션 통계 로깅
