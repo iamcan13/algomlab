@@ -4,7 +4,7 @@
   "description": "Backend server for realtime interview copilot",
   "main": "index.js",
   "scripts": {
-    "dev": "ts-node --esm src/index.ts",
+    "dev": "ts-node src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js"
   },
@@ -20,6 +20,5 @@
     "@types/node": "^20.10.4",
     "typescript": "^5.3.3",
     "ts-node": "^10.9.1"
-  },
-  "type": "module"
+  }
 }
