@@ -30,8 +30,37 @@
 2. 프로젝트 구조 변경 시 ARCHITECTURE.md 업데이트 필수
 3. 새로운 기능 추가 시 아키텍처 문서와의 일관성 유지
 
+## 개발 서버 실행 표준 절차
+
+### 포트 설정
+- **프론트엔드**: 3000번 포트 (Next.js)
+- **백엔드**: 3001번 포트 (Express), 8080번 포트 (WebSocket)
+
+### 서버 시작 명령어 (포트 충돌 방지)
+```bash
+# 기존 프로세스 강제 종료 후 서버 시작
+lsof -ti:3000 | xargs kill -9 2>/dev/null || true
+lsof -ti:3001 | xargs kill -9 2>/dev/null || true  
+lsof -ti:8080 | xargs kill -9 2>/dev/null || true
+
+# 백엔드 서버 시작 (백그라운드)
+cd server && npm run dev &
+
+# 프론트엔드 서버 시작 (백그라운드)  
+npm run dev &
+```
+
+### 서버 상태 확인
+```bash
+# 포트 사용 확인
+lsof -i:3000,3001,8080
+
+# 프로세스 상태 확인
+ps aux | grep -E "(next|ts-node)"
+```
+
 ### 현재 프로젝트 상태:
 - Next.js 프론트엔드 구성 완료
-- Express 백엔드 구조 생성 중
+- Express 백엔드 구조 생성 중  
 - WebSocket 통신 구현 대기
 - Whisper/GPT 연동은 추후 진행

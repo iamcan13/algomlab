@@ -5,6 +5,9 @@ import cors from 'cors';
 import { createServer } from 'http';
 import { AudioStorageService, AudioChunkMessage } from './services/audioStorage';
 import { WhisperService } from './services/whisperService';
+import { TemplateLoader } from './TemplateLoader';
+import { LLMMapper } from './LLMMapper';
+import { CriteriaManager } from './CriteriaManager';
 
 const app = express();
 const server = createServer(app);
@@ -14,6 +17,9 @@ const WS_PORT = parseInt(process.env.WS_PORT || '8080');
 // Services
 const audioStorage = new AudioStorageService();
 const whisperService = new WhisperService();
+const templateLoader = new TemplateLoader();
+const llmMapper = new LLMMapper();
+const criteriaManager = new CriteriaManager();
 
 // Middleware
 app.use(cors());
@@ -23,6 +29,8 @@ app.use(express.json());
 app.get('/api/health', async (req, res) => {
   const whisperHealth = await whisperService.healthCheck();
   const whisperStats = whisperService.getStats();
+  const llmHealth = await llmMapper.healthCheck();
+  const llmStats = llmMapper.getStats();
   
   res.json({ 
     status: 'ok', 
@@ -30,6 +38,10 @@ app.get('/api/health', async (req, res) => {
     whisper: {
       healthy: whisperHealth,
       ...whisperStats
+    },
+    llm: {
+      healthy: llmHealth,
+      ...llmStats
     }
   });
 });
@@ -39,6 +51,87 @@ app.get('/api/sessions/:sessionId/stats', (req, res) => {
   const { sessionId } = req.params;
   const stats = audioStorage.getSessionStats(sessionId);
   res.json(stats);
+});
+
+// Template endpoints
+app.get('/api/templates', async (req, res) => {
+  try {
+    const templates = await templateLoader.getAvailableTemplates();
+    res.json({ templates });
+  } catch (error) {
+    console.error('템플릿 목록 조회 실패:', error);
+    res.status(500).json({ error: '템플릿 목록을 불러올 수 없습니다' });
+  }
+});
+
+app.get('/api/templates/:templateId', async (req, res) => {
+  try {
+    const { templateId } = req.params;
+    const template = await templateLoader.loadTemplate(templateId);
+    
+    if (!template) {
+      return res.status(404).json({ error: '템플릿을 찾을 수 없습니다' });
+    }
+    
+    res.json(template);
+  } catch (error) {
+    console.error('템플릿 로드 실패:', error);
+    res.status(500).json({ error: '템플릿을 불러올 수 없습니다' });
+  }
+});
+
+app.get('/api/templates/default', async (req, res) => {
+  try {
+    const template = await templateLoader.getDefaultTemplate();
+    
+    if (!template) {
+      return res.status(404).json({ error: '기본 템플릿을 찾을 수 없습니다' });
+    }
+    
+    res.json(template);
+  } catch (error) {
+    console.error('기본 템플릿 로드 실패:', error);
+    res.status(500).json({ error: '기본 템플릿을 불러올 수 없습니다' });
+  }
+});
+
+// Criteria management endpoints
+app.post('/api/criteria/template', async (req, res) => {
+  try {
+    const { templateId } = req.body;
+    
+    if (!templateId) {
+      return res.status(400).json({ error: '템플릿 ID가 필요합니다' });
+    }
+    
+    const template = await templateLoader.loadTemplate(templateId);
+    if (!template) {
+      return res.status(404).json({ error: '템플릿을 찾을 수 없습니다' });
+    }
+    
+    criteriaManager.setTemplate(template);
+    res.json({ message: '템플릿 설정 완료', template });
+  } catch (error) {
+    console.error('템플릿 설정 실패:', error);
+    res.status(500).json({ error: '템플릿 설정에 실패했습니다' });
+  }
+});
+
+app.get('/api/criteria/status', (req, res) => {
+  try {
+    const template = criteriaManager.getTemplate();
+    const stats = criteriaManager.getStats();
+    
+    res.json({
+      template,
+      stats,
+      weakCriteria: criteriaManager.getWeakCriteria(),
+      progress: criteriaManager.getProgress()
+    });
+  } catch (error) {
+    console.error('기준 상태 조회 실패:', error);
+    res.status(500).json({ error: '기준 상태를 조회할 수 없습니다' });
+  }
 });
 
 // WebSocket Server
@@ -72,17 +165,56 @@ wss.on('connection', (ws) => {
           ).then(transcriptionResult => {
             // STT 결과를 클라이언트에 전송
             if (transcriptionResult.success && transcriptionResult.transcription) {
+              const transcript = transcriptionResult.transcription.text;
               const sttMessage = {
                 type: 'transcription_result',
                 sessionId: audioMessage.sessionId,
                 sequence: audioMessage.sequence,
-                text: transcriptionResult.transcription.text,
+                text: transcript,
                 duration: transcriptionResult.transcription.duration,
                 timestamp: Date.now()
               };
               
-              console.log(`STT 결과 전송: "${sttMessage.text}"`);
+              console.log(`STT 결과 전송: "${transcript}"`);
               ws.send(JSON.stringify(sttMessage));
+
+              // LLM 분석 수행 (백그라운드)
+              const currentTemplate = criteriaManager.getTemplate();
+              if (currentTemplate && transcript.trim().length > 0) {
+                criteriaManager.addToConversationHistory(transcript);
+                
+                llmMapper.processTranscript(
+                  transcript,
+                  currentTemplate,
+                  criteriaManager.getConversationHistory()
+                ).then(llmResponse => {
+                  if (llmResponse) {
+                    // 기준 업데이트 적용
+                    criteriaManager.applyCriteriaUpdates(llmResponse.criteria_updates);
+                    
+                    // 기준 업데이트를 클라이언트에 전송
+                    if (llmResponse.criteria_updates.length > 0) {
+                      ws.send(JSON.stringify({
+                        type: 'criteria_update',
+                        updates: llmResponse.criteria_updates,
+                        progress: criteriaManager.getProgress(),
+                        timestamp: Date.now()
+                      }));
+                    }
+                    
+                    // 질문 제안을 클라이언트에 전송
+                    if (llmResponse.next_questions.length > 0) {
+                      ws.send(JSON.stringify({
+                        type: 'questions',
+                        questions: llmResponse.next_questions,
+                        timestamp: Date.now()
+                      }));
+                    }
+                  }
+                }).catch(error => {
+                  console.error('LLM 분석 중 오류:', error);
+                });
+              }
             } else {
               console.error(`STT 실패: ${transcriptionResult.error}`);
               ws.send(JSON.stringify({

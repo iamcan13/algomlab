@@ -1,0 +1,69 @@
+{
+  "role": "주니어 프론트엔드 개발자",
+  "criteria": [
+    {
+      "id": "cs_fundamentals",
+      "label": "CS 기초",
+      "weight": 2,
+      "rubric": "자료구조, 알고리즘, 네트워크 기본 개념 이해",
+      "status": "unknown",
+      "evidence": []
+    },
+    {
+      "id": "javascript",
+      "label": "JavaScript",
+      "weight": 3,
+      "rubric": "ES6+ 문법, 비동기 처리, 클로저, 프로토타입 이해",
+      "status": "unknown",
+      "evidence": []
+    },
+    {
+      "id": "react",
+      "label": "React",
+      "weight": 3,
+      "rubric": "컴포넌트, 훅, 상태관리, 라이프사이클 이해",
+      "status": "unknown",
+      "evidence": []
+    },
+    {
+      "id": "html_css",
+      "label": "HTML/CSS",
+      "weight": 2,
+      "rubric": "시맨틱 HTML, CSS 레이아웃, 반응형 디자인 기본",
+      "status": "unknown",
+      "evidence": []
+    },
+    {
+      "id": "web_standards",
+      "label": "웹 표준",
+      "weight": 2,
+      "rubric": "브라우저 동작 원리, HTTP/HTTPS, DOM 조작",
+      "status": "unknown",
+      "evidence": []
+    },
+    {
+      "id": "problem_solving",
+      "label": "문제 해결",
+      "weight": 3,
+      "rubric": "논리적 사고, 디버깅 능력, 문제 분석 및 해결",
+      "status": "unknown",
+      "evidence": []
+    },
+    {
+      "id": "communication",
+      "label": "의사소통",
+      "weight": 2,
+      "rubric": "기술적 설명, 질문 이해, 명확한 답변",
+      "status": "unknown",
+      "evidence": []
+    },
+    {
+      "id": "tools_workflow",
+      "label": "도구/워크플로우",
+      "weight": 1,
+      "rubric": "Git, 패키지 매니저, 빌드 도구 기본 사용법",
+      "status": "unknown",
+      "evidence": []
+    }
+  ]
+}
